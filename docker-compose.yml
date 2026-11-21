@@ -1,0 +1,26 @@
+services:
+  recovery-api:
+    build: .
+    image: disk-recovery-api:1.0.0
+    container_name: disk-recovery-api
+    ports:
+      - "8000:8000"
+    environment:
+      # 预置 raw 基线镜像大小（支持 KiB/MiB/GiB 后缀或纯字节数）
+      BASELINE_SIZE: "16MiB"
+      RECOVERY_DATA_DIR: "/data"
+      PORT: "8000"
+    volumes:
+      # 命名卷持久化块存储；重启后只提供最后完整提交的版本
+      - recovery-data:/data
+    restart: unless-stopped
+    # 单 worker：提交串行化依赖进程内锁；多副本需改为外部锁
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4); sys.exit(0 if json.load(r)['status']=='ok' else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  recovery-data:
