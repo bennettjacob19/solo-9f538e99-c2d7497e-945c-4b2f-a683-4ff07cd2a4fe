@@ -4,12 +4,16 @@ services:
     image: disk-recovery-api:1.0.0
     container_name: disk-recovery-api
     ports:
-      - "8000:8000"
+      - "8000:8000"      # HTTP API 与 /docs
+      - "10809:10809"    # NBD 只读导出（qemu-io/qemu-img 按版号连接）
     environment:
       # 预置 raw 基线镜像大小（支持 KiB/MiB/GiB 后缀或纯字节数）
       BASELINE_SIZE: "16MiB"
       RECOVERY_DATA_DIR: "/data"
       PORT: "8000"
+      # NBD 只读导出：NBD_PORT 非空即启用（置空可关闭）
+      NBD_HOST: "0.0.0.0"
+      NBD_PORT: "10809"
     volumes:
       # 命名卷持久化块存储；重启后只提供最后完整提交的版本
       - recovery-data:/data

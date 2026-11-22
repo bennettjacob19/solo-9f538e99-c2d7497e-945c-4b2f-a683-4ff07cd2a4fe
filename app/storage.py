@@ -512,6 +512,40 @@ class BlockStore:
         fh.seek(0)
         return fh.read(length)
 
+    def read_range(
+        self,
+        offset: int,
+        length: int,
+        max_version: int | None = None,
+    ) -> bytes:
+        """读取 [offset, offset+length) 字节范围，只访问该范围涉及的块。
+
+        供 NBD 按需读取使用：支持跨块（自动拼接），丢弃块读零，
+        末块按真实长度处理；max_version 固定读取视图（版本钉住）。
+        越界抛 StorageError。
+        """
+        if self.current is None:
+            raise StorageError("存储尚未初始化")
+        if offset < 0 or length < 0:
+            raise StorageError(f"非法读取范围: offset={offset} length={length}")
+        if offset + length > self.current.image_size:
+            raise StorageError(
+                f"读取范围 [{offset}, {offset + length}) 越界，镜像大小 {self.current.image_size}"
+            )
+        if length == 0:
+            return b""
+        end_pos = offset + length
+        first = offset // BLOCK_SIZE
+        last = (end_pos - 1) // BLOCK_SIZE
+        parts: list[bytes] = []
+        for index in range(first, last + 1):
+            block = self.read_block(index, max_version=max_version)
+            block_start = index * BLOCK_SIZE
+            lo = max(offset - block_start, 0)
+            hi = min(end_pos - block_start, len(block))
+            parts.append(block[lo:hi])
+        return b"".join(parts)
+
     def _hash_image(self, overlay: dict[int, dict] | None, overlay_version: int) -> str:
         digest = hashlib.sha256()
         # 提交校验时 current 尚未发布，读取视图固定在父版本

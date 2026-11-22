@@ -7,6 +7,10 @@
 * GET  /image            流式下载当前 raw 镜像（下载开始时固定版本快照）
 
 交互式文档由 FastAPI 内置提供在 /docs（Swagger UI）与 /redoc。
+
+另可选启动 NBD 只读导出（环境变量 NBD_PORT 非空即启用，NBD_HOST 默认 0.0.0.0）：
+QEMU 以导出名 = 十进制版号连接（如 nbd://host:10809/2），把该版灾备盘当作
+只读块设备按需读取；连接建立时钉住所选版本，之后提交新版不影响已连接客户端。
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from .nbd_server import NBDServer
 from .storage import BlockStore, ConflictError, StorageError
 
 logger = logging.getLogger("disk_recovery")
@@ -27,6 +32,40 @@ logger = logging.getLogger("disk_recovery")
 
 def _default_data_dir() -> str:
     return os.environ.get("RECOVERY_DATA_DIR", "/data")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    data_dir = getattr(app.state, "data_dir", None) or _default_data_dir()
+    store = BlockStore(data_dir)
+    store.open()
+    app.state.store = store
+    # NBD 只读导出：NBD_PORT 非空即启用（与 HTTP 同进程，共享同一 BlockStore）
+    nbd_server: NBDServer | None = None
+    nbd_port = os.environ.get("NBD_PORT", "").strip()
+    if nbd_port:
+        nbd_host = os.environ.get("NBD_HOST", "0.0.0.0").strip() or "0.0.0.0"
+        nbd_server = NBDServer(store, host=nbd_host, port=int(nbd_port))
+        bound_host, bound_port = nbd_server.start()
+        app.state.nbd_server = nbd_server
+        # 业务日志默认无输出渠道：接入 uvicorn 的 handler，容器日志可见
+        uvicorn_logger = logging.getLogger("uvicorn")
+        if uvicorn_logger.handlers and not logger.handlers:
+            logger.handlers = list(uvicorn_logger.handlers)
+            logger.setLevel(logging.INFO)
+            logger.propagate = False
+        logger.info(
+            "NBD 只读导出已监听 %s:%s（导出名 = 十进制版号，如 nbd://host:%s/1）",
+            bound_host,
+            bound_port,
+            bound_port,
+        )
+    try:
+        yield
+    finally:
+        if nbd_server is not None:
+            nbd_server.stop()
+        store.close()
 
 
 class BlockChange(BaseModel):
@@ -60,18 +99,6 @@ class CommitResponse(BaseModel):
     sha256: str
     image_size: int
     block_count: int
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    data_dir = getattr(app.state, "data_dir", None) or _default_data_dir()
-    store = BlockStore(data_dir)
-    store.open()
-    app.state.store = store
-    try:
-        yield
-    finally:
-        store.close()
 
 
 def create_app(data_dir: str | None = None) -> FastAPI:

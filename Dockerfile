@@ -14,7 +14,7 @@ COPY app ./app
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh && mkdir -p /data
 
-EXPOSE 8000
+EXPOSE 8000 10809
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=5 \
     CMD python -c "import json,urllib.request,sys; \

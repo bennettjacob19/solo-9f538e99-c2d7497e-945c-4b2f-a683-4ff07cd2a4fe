@@ -285,6 +285,51 @@ def test_failed_commit_then_retry_same_version_succeeds(store):
     assert b"".join(store.iter_image()) == target
 
 
+def test_read_range_cross_block_and_tail(store, image_size):
+    """read_range：跨块拼接、非对齐偏移、末块真实长度。"""
+    base = expected_image(store)
+    # 跨 3 个块边界的非对齐读
+    offset, length = BLOCK_SIZE - 7, 3 * BLOCK_SIZE + 13
+    assert store.read_range(offset, length) == base[offset : offset + length]
+    # 整盘
+    assert store.read_range(0, image_size) == base
+    # 末块按真实长度（777 字节）
+    tail_len = image_size % BLOCK_SIZE
+    assert store.read_range(image_size - tail_len, tail_len) == base[-tail_len:]
+    assert len(store.read_range(image_size - tail_len, tail_len)) == tail_len
+    # 零长度
+    assert store.read_range(10, 0) == b""
+
+
+def test_read_range_discard_zero_and_version_pinning(store, image_size):
+    """read_range：丢弃块读零；max_version 钉住旧版视图。"""
+    base = expected_image(store)
+    block1 = b"\x42" * BLOCK_SIZE
+    img_v2 = bytearray(base)
+    img_v2[0:BLOCK_SIZE] = b"\x00" * BLOCK_SIZE
+    img_v2[BLOCK_SIZE : 2 * BLOCK_SIZE] = block1
+    store.commit(
+        parent_version=1,
+        changes=[{"index": 0, "op": "discard"}, write_change(1, block1)],
+        expected_sha256=sha256_hex(bytes(img_v2)),
+    )
+    # 当前版（v2）：块0 读零、块1 新数据，跨块边界
+    got = store.read_range(BLOCK_SIZE - 4, 8)
+    assert got == b"\x00" * 4 + block1[:4]
+    # 钉住 v1：仍是基线内容
+    pinned = store.read_range(BLOCK_SIZE - 4, 8, max_version=1)
+    assert pinned == base[BLOCK_SIZE - 4 : BLOCK_SIZE + 4]
+
+
+def test_read_range_out_of_bounds(store, image_size):
+    with pytest.raises(StorageError, match="越界"):
+        store.read_range(image_size - 10, 20)
+    with pytest.raises(StorageError, match="越界"):
+        store.read_range(image_size, 1)
+    with pytest.raises(StorageError, match="非法"):
+        store.read_range(-1, 10)
+
+
 def test_concurrent_reads_during_commits(store):
     """提交线程持续发布新版本的同时，读线程反复整盘读取，不得抛并发异常。"""
     import threading
